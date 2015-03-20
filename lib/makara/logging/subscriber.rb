@@ -5,9 +5,13 @@ module Makara
 
       def sql(event)
         name = event.payload[:name]
-        name = [current_wrapper_name(event), name].compact.join(' ')
-        event.payload[:name] = name
-        super(event)
+        if ActiveRecord::LogSubscriber::IGNORE_PAYLOAD_NAMES.include?(name)
+          self.class.runtime += event.duration
+        else
+          name = [current_wrapper_name(event), name].compact.join(' ')
+          event.payload[:name] = name
+          super(event)
+        end
       end
 
       protected
