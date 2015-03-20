@@ -2,10 +2,11 @@ module Makara
   module Logging
 
     module Subscriber
+      IGNORE_PAYLOAD_NAMES = ["SCHEMA", "EXPLAIN"]
 
       def sql(event)
         name = event.payload[:name]
-        if ActiveRecord::LogSubscriber::IGNORE_PAYLOAD_NAMES.include?(name)
+        if IGNORE_PAYLOAD_NAMES.include?(name)
           self.class.runtime += event.duration
         else
           name = [current_wrapper_name(event), name].compact.join(' ')
