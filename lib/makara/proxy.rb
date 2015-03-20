@@ -49,7 +49,6 @@ module Makara
       @error_handler  ||= ::Makara::ErrorHandler.new
       @skip_sticking  = false
       instantiate_connections
-      stick_to_master!(false)
     end
 
 
@@ -158,8 +157,12 @@ module Makara
         @master_pool
 
       # yay! use a slave
-      else
+      elsif Thread.current[:distribute_reads]
         @slave_pool
+
+      # default to master
+      else
+        @master_pool
       end
     end
 
