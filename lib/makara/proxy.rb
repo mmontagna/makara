@@ -134,6 +134,8 @@ module Makara
     end
 
     def _appropriate_pool(method_name, args)
+      return @master_pool unless Thread.current[:distribute_reads]
+
       # the args provided absolutely need master
       if needs_master?(method_name, args)
         stick_to_master(method_name, args)
