@@ -3,8 +3,8 @@ module Makara
 
     MAJOR = 0
     MINOR = 3
-    PATCH = 0
-    PRE = 'rc3'
+    PATCH = 3
+    PRE = nil
 
     def self.to_s
       [MAJOR, MINOR, PATCH, PRE].compact.join('.')
