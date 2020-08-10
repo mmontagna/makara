@@ -2,6 +2,7 @@ require 'active_record'
 require 'makara'
 require 'timecop'
 require 'yaml'
+require 'rack'
 
 begin
   require 'byebug'
@@ -14,33 +15,27 @@ rescue LoadError
 end
 
 RSpec.configure do |config|
-  config.treat_symbols_as_metadata_keys_with_true_values = true
   config.run_all_when_everything_filtered = true
   config.filter_run :focus
 
   config.order = 'random'
 
+  require "#{File.dirname(__FILE__)}/support/helpers"
   require "#{File.dirname(__FILE__)}/support/proxy_extensions"
   require "#{File.dirname(__FILE__)}/support/pool_extensions"
-  require "#{File.dirname(__FILE__)}/support/configurator"
   require "#{File.dirname(__FILE__)}/support/mock_objects"
+  require "#{File.dirname(__FILE__)}/support/deep_dup"
+  require "#{File.dirname(__FILE__)}/support/user"
 
-  config.include Configurator
+  config.include SpecHelpers
 
   config.before :each do
-    Makara::Cache.store = :memory
     change_context
-    allow_any_instance_of(Makara::Pool).to receive(:should_shuffle?){ false }
+    allow_any_instance_of(Makara::Strategies::RoundRobin).to receive(:should_shuffle?){ false }
+    RSpec::Mocks.space.proxy_for(ActiveRecord::Base).reset # make sure not stubbed in some way
   end
 
   def change_context
-    Makara::Context.set_previous nil
-    Makara::Context.set_current nil
+    Makara::Context.set_current({})
   end
-
-  def roll_context
-    Makara::Context.set_previous Makara::Context.get_current
-    Makara::Context.set_current Makara::Context.generate
-  end
-
 end

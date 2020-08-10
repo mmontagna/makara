@@ -6,14 +6,12 @@
 
 Makara is generic master/slave proxy. It handles the heavy lifting of managing, choosing, blacklisting, and cycling through connections. It comes with an ActiveRecord database adapter implementation.
 
-#### Warning:
-
-There is a potential performance issue when used alongside certain versions of [newrelic/rpm](https://github.com/newrelic/rpm). Read more and contribute data [here](https://github.com/taskrabbit/makara/issues/59).
-
 ## Installation
 
+Use the current version of the gem from [rubygems](https://rubygems.org/gems/makara) in your `Gemfile`.
+
 ```ruby
-gem 'makara', github: 'taskrabbit/makara', tag: 'v0.3.x'
+gem 'makara'
 ```
 
 ## Basic Usage
@@ -55,40 +53,50 @@ This implementation will send any request not like "SELECT..." to a master conne
 
 Makara comes with a config parser which will handle providing subconfigs to the `connection_for` method. Check out the ActiveRecord database.yml example below for more info.
 
-### Context
+### Stickiness Context
 
-Makara handles stickyness by keeping track of a context (sha). In a multi-instance environment it persists a context in a cache. If Rails is present it will automatically use Rails.cache. You can provide any kind of store as long as it responds to the methods required in [lib/makara/cache.rb](lib/makara/cache.rb).
+Makara handles stickiness by keeping track of which proxies are stuck at any given moment. The context is basically a mapping of proxy ids to the timestamp until which they are stuck.
+
+To handle persistence of context across requests in a Rack app, makara provides a middleware. It lays a cookie named `_mkra_stck` which contains the current context. If the next request is executed before the cookie expires, that given context will be used. If something occurs which naturally requires master on the second request, the context is updated and stored again.
+
+#### Stickiness Impact
+
+When `sticky:true`, once a query as been sent to master, all queries for the rest of the request will also be sent to master.  In addition, the cookie described above will be set client side with an expiration defined by time at end of original request + `master_ttl`.  As long as the cookie is valid, all requests will send queries to master.
+
+When `sticky:false`, only queries that need to go to master will go there.  Subsequent read queries in the same request will go to slaves.
+
+#### Releasing stuck connections (clearing context)
+
+If you need to clear the current context, releasing any stuck connections, all you have to do is:
 
 ```ruby
-Makara::Cache.store = MyRedisCacheStore.new
+Makara::Context.release_all
 ```
 
-To handle persistence of context across requests in a Rack app, makara provides a middleware. It lays a cookie named `_mkra_ctxt` which contains the current master context. If the next request is executed before the cookie expires, master will be used. If something occurs which naturally requires master on the second request, the context is changed and stored again.
-
-#### Changing Context
-
-If you need to change the makara context, releasing any stuck connections, all you have to do is:
-
+You can also clear stuck connections for a specific proxy:
 ```ruby
-ctx = Makara::Context.generate # or any unique sha
-Makara::Context.set_current ctx
+Makara::Context.release(proxy_id)
+Makara::Context.release('mysql_main')
+Makara::Context.release('redis')
+...
 ```
 
 A context is local to the curent thread of execution. This will allow you to stick to master safely in a single thread
 in systems such as sidekiq, for instance.
 
 
-### Forcing Master
+#### Forcing Master
 
 If you need to force master in your app then you can simply invoke stick_to_master! on your connection:
 
 ```ruby
-write_to_cache = true # or false
-proxy.stick_to_master!(write_to_cache)
+persist = true # or false, it's true by default
+proxy.stick_to_master!(persist)
 ```
 
+It'll keep the proxy stuck to master for the current request, and if `persist = true` (default), it'll be also stored in the context for subsequent requests, keeping the proxy stuck up to the duration of `master_ttl` configured for the proxy.
 
-### Skipping the Stickiness
+#### Skipping the Stickiness
 
 If you're using the `sticky: true` configuration and you find yourself in a situation where you need to write information through the proxy but you don't want the context to be stuck to master, you should use a `without_sticking` block:
 
@@ -114,7 +122,13 @@ By creating a makara database adapter which simply acts as a proxy we avoid any 
 
 ### What goes where?
 
-Any `SELECT` statements will execute against your slave(s), anything else will go to master. The only edge case is `SET` operations which are sent to all connections. Execution of specific methods such as `connect!`, `disconnect!`, and `clear_cache!` are invoked on all underlying connections.
+In general: Any `SELECT` statements will execute against your slave(s), anything else will go to master.
+
+There are some edge cases:
+* `SET` operations will be sent to all connections
+* Execution of specific methods such as `connect!`, `disconnect!`, and `clear_cache!` are invoked on all underlying connections
+* Calls inside a transaction will always be sent to the master (otherwise changes from within the transaction could not be read back on most transaction isolation levels)
+* Locking reads (e.g. `SELECT ... FOR UPDATE`) will always be sent to the master
 
 ### Errors / blacklisting
 
@@ -133,9 +147,12 @@ production:
   # add a makara subconfig
   makara:
 
+    # optional id to identify the proxy with this configuration for stickiness
+    id: mysql
     # the following are default values
     blacklist_duration: 5
     master_ttl: 5
+    master_strategy: round_robin
     sticky: true
 
     # list your connections with the override values (they're merged into the top-level config)
@@ -154,9 +171,13 @@ Let's break this down a little bit. At the top level of your config you have the
 Following the adapter choice is all the standard configurations (host, port, retry, database, username, password, etc). With all the standard configurations provided, you can now provide the makara subconfig.
 
 The makara subconfig sets up the proxy with a few of its own options, then provides the connection list. The makara options are:
+* id - an identifier for the proxy, used for sticky behaviour and context. The default is to use a MD5 hash of the configuration contents, so if you are setting `sticky` to true, it's a good idea to also set an `id`. Otherwise any stuck connections will be cleared if the configuration changes (as the default MD5 hash id would change as well)
 * blacklist_duration - the number of seconds a node is blacklisted when a connection failure occurs
+* disable_blacklist - do not blacklist node at any error, useful in case of one master
 * sticky - if a node should be stuck to once it's used during a specific context
 * master_ttl - how long the master context is persisted. generally, this needs to be longer than any replication lag
+* master_strategy - use a different strategy for picking the "current" master node: `failover` will try to keep the same one until it is blacklisted. The default is `round_robin` which will cycle through available ones.
+* slave_strategy - use a different strategy for picking the "current" slave node: `failover` will try to keep the same one until it is blacklisted. The default is `round_robin` which will cycle through available ones.
 * connection_error_matchers - array of custom error matchers you want to be handled gracefully by Makara (as in, errors matching these regexes will result in blacklisting the connection as opposed to raising directly).
 
 Connection definitions contain any extra node-specific configurations. If the node should behave as a master you must provide `role: master`. Any previous configurations can be overridden within a specific node's config. Nodes can also contain weights if you'd like to balance usage based on hardware specifications. Optionally, you can provide a name attribute which will be used in sql logging.
@@ -177,6 +198,55 @@ connections:
 ```
 
 In the previous config the "Big Slave" would receive ~80% of traffic.
+
+#### DATABASE_URL
+
+Connections may specify a `url` parameter in place of host, username, password, etc.
+
+```yml
+connections:
+  - role: master
+    blacklist_duration: 0
+    url: 'mysql2://db_username:db_password@localhost:3306/db_name'
+```
+
+We recommend, if using environmental variables, to interpolate them via ERb.
+
+```yml
+connections:
+  - role: master
+    blacklist_duration: 0
+    url: <%= ENV['DATABASE_URL_MASTER'] %>
+  - role: slave
+    url: <%= ENV['DATABASE_URL_SLAVE'] %>
+```
+
+**Important**: *Do NOT use `ENV['DATABASE_URL']`*, as it inteferes with the the database configuration
+initialization and may cause Makara not to complete the configuration.  For the moment, it is easier
+to use a different ENV variable than to hook into the database initialization in all the supported
+Rails.
+
+For more information on url parsing, as used in
+[ConfigParser](https://github.com/taskrabbit/makara/blob/master/lib/makara/config_parser.rb), see:
+
+- 3.0
+    [ActiveRecord::Base::ConnectionSpecification.new](https://github.com/rails/rails/blob/3-0-stable/activerecord/lib/active_record/connection_adapters/abstract/connection_specification.rb#L3-L7)
+- 3.0
+    [ActiveRecord::Base::ConnectionSpecification.new](https://github.com/rails/rails/blob/3-1-stable/activerecord/lib/active_record/connection_adapters/abstract/connection_specification.rb#L3-L7)
+- 3.2
+  [ActiveRecord::Base::ConnectionSpecification::Resolver.send(:connection_url_to_hash, url_config[:url])](https://github.com/rails/rails/blob/3-2-stable/activerecord/lib/active_record/connection_adapters/abstract/connection_specification.rb#L60-L77)
+- 4.0
+ [ActiveRecord::ConnectionAdapters::ConnectionSpecification::Resolver.send(:connection_url_to_hash, url_config[:url])](https://github.com/rails/rails/blob/4-0-stable/activerecord/lib/active_record/connection_adapters/connection_specification.rb#L68-L92)
+  - [ActiveRecord::ConnectionHandling::MergeAndResolveDefaultUrlConfig](https://github.com/rails/rails/blob/4-0-stable/activerecord/lib/active_record/connection_handling.rb)
+- 4.1
+ [ActiveRecord::ConnectionAdapters::ConnectionSpecification::ConnectionUrlResolver.new(url).to_hash](https://github.com/rails/rails/blob/4-1-stable/activerecord/lib/active_record/connection_adapters/connection_specification.rb#L17-L121)
+  - ActiveRecord::ConnectionHandling::MergeAndResolveDefaultUrlConfig.new(url_config).resolve
+- 4.2
+ [ActiveRecord::ConnectionAdapters::ConnectionSpecification::ConnectionUrlResolver.new(url).to_hash](https://github.com/rails/rails/blob/4-2-stable/activerecord/lib/active_record/connection_handling.rb#L60-L81)
+- master
+ [ActiveRecord::ConnectionAdapters::ConnectionSpecification::ConnectionUrlResolver.new(url).to_hash](https://github.com/rails/rails/blob/97b980b4e61aea3cee429bdee4b2eae2329905cd/activerecord/lib/active_record/connection_handling.rb#L60-L81)
+
+
 
 ## Custom error matchers:
 
@@ -210,16 +280,7 @@ def handle_request_after_third_party_record_creation
 end
 ```
 
-Similarly, if you have a third party service which will conduct a generic request against your Rack app, you can force master via a query param:
-
-```ruby
-def send_url_to_third_party
-  context = Makara::Context.get_current
-  ThirdParty.read_from_here!("http://mysite.com/path/to/resource?_mkra_ctxt=#{context}")
-end
-```
-
 ## Todo
 
-* Cookie based cache store?
+* Support for providing context as query param
 * More real world examples
