@@ -59,7 +59,7 @@ describe Makara::Cookie do
     it 'expires the cookie if the next context is empty' do
       Makara::Cookie.store({}, headers)
 
-      expect(headers['Set-Cookie']).to eq("#{cookie_key}=; path=/; max-age=0; expires=#{Time.now.gmtime.rfc2822}; HttpOnly")
+      expect(headers['Set-Cookie']).to eq("#{cookie_key}=; path=/; max-age=0; expires=#{Time.now.httpdate}; HttpOnly")
     end
 
     it 'allows custom cookie options to be provided' do
