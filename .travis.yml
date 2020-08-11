@@ -7,6 +7,12 @@ services:
   - mysql
   - postgresql
 
+addons:
+  postgresql: 10
+  apt:
+    packages:
+    - postgresql-10-postgis-2.4
+
 before_install:
   - gem install bundler
 
