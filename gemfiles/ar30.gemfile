@@ -26,5 +26,11 @@ end
 if rmajor == 1 && (rminor == 8 || (rminor == 9 && rpatch < 3))
   gem 'pg', '0.17.1', :platform => :ruby
 else
-  gem 'pg', :platform => :ruby
+  gem 'pg', '0.21.0', :platform => :ruby
+end
+
+# 2.1 +
+if rmajor > 2 || (rmajor == 2 && rminor >= 1)
+  gem 'activerecord-postgis-adapter', :platform => :ruby
+  gem 'rgeo', :platform => :ruby
 end
